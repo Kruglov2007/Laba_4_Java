@@ -2,10 +2,25 @@ import javax.swing.*;
 import javax.swing.event.MenuEvent;
 import javax.swing.event.MenuListener;
 import java.awt.*;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
 import java.awt.font.FontRenderContext;
 import java.awt.geom.*;
 
 public class GraphicsDisplay extends JPanel {
+    // --- Новые поля для масштабирования и сброса ---
+    private double originalMinX;
+    private double originalMaxX;
+    private double originalMinY;
+    private double originalMaxY;
+    private boolean isDataLoaded = false; // Чтобы зафиксировать исходные границы один раз
+
+    private Point drawRectStart = null; // Точка нажатия мыши (экранная)
+    private Point drawRectEnd = null;   // Текущая точка курсора при перетаскивании (экранная)
+    private boolean isZoomed = false;   // Флаг, изменен ли масштаб в данный момент
+    private BasicStroke selectionStroke = new BasicStroke(1.0f, BasicStroke.CAP_BUTT,
+            BasicStroke.JOIN_MITER, 10.0f, new float[]{5.0f, 5.0f}, 0.0f); // Пунктирная рамка
+
     // Список координат точек для построения графика
     private Double[][] graphicsData;
     // Флаговые переменные, задающие правила отображения графика
@@ -25,6 +40,11 @@ public class GraphicsDisplay extends JPanel {
     private BasicStroke markerStroke;
     // Шрифт отображения подписей к осям координат
     private Font axisFont;
+    // --- Новые поля для реализации всплывающих подсказок ---
+    private Double[] hoveredPoint = null; // Данные точки, на которую навели (X, Y в исходных координатах)
+    private Point mousePosition = null;   // Экранные координаты курсора мыши (для отрисовки тултипа)
+    private final int pointRadius = 11;   // Диаметр маркера из  метода paintMarkers (11 пикселей)
+
 
     public GraphicsDisplay() {
 // Цвет заднего фона области отображения - белый
@@ -42,12 +62,108 @@ public class GraphicsDisplay extends JPanel {
 // Шрифт для подписей осей координат
         axisFont = new Font("Serif", Font.BOLD, 36);
 
-    }
+
+
+        MouseAdapter mouseHandler = new MouseAdapter() {
+            @Override
+            public void mousePressed(MouseEvent e) {
+                if (graphicsData == null || graphicsData.length == 0) return;
+
+                // Если нажата ЛЕВАЯ кнопка мыши — начинаем выделение области
+                if (SwingUtilities.isLeftMouseButton(e)) {
+                    drawRectStart = e.getPoint();
+                    drawRectEnd = e.getPoint();
+                    repaint();
+                }
+                // Если нажата ПРАВАЯ кнопка мыши — восстанавливаем исходный масштаб
+                else if (SwingUtilities.isRightMouseButton(e) && isZoomed) {
+                    minX = originalMinX;
+                    maxX = originalMaxX;
+                    minY = originalMinY;
+                    maxY = originalMaxY;
+                    isZoomed = false;
+                    repaint();
+                }
+            }
+            @Override
+            public void mouseDragged(MouseEvent e) {
+                // Если идет выделение левой кнопкой, обновляем конечную точку рамки
+                if (drawRectStart != null) {
+                    drawRectEnd = e.getPoint();
+                    repaint(); // Перерисовываем, чтобы рамка "растягивалась"
+                }
+            }
+
+            @Override
+            public void mouseReleased(MouseEvent e) {
+                // Когда левая кнопка отпущена, фиксируем выделенную область
+                if (SwingUtilities.isLeftMouseButton(e) && drawRectStart != null && drawRectEnd != null) {
+                    // Проверяем, что выделение было физическим (а не просто клик на месте)
+                    if (Math.abs(drawRectStart.x - drawRectEnd.x) > 3 && Math.abs(drawRectStart.y - drawRectEnd.y) > 3) {
+
+                        // Переводим левый верхний и правый нижний углы рамки в координаты графика
+                        int startX = Math.min(drawRectStart.x, drawRectEnd.x);
+                        int startY = Math.min(drawRectStart.y, drawRectEnd.y);
+                        int endX = Math.max(drawRectStart.x, drawRectEnd.x);
+                        int endY = Math.max(drawRectStart.y, drawRectEnd.y);
+
+                        Point2D.Double topLeftGraphics = pointToXY(startX, startY);
+                        Point2D.Double bottomRightGraphics = pointToXY(endX, endY);
+
+                        // Устанавливаем новые границы отображения
+                        minX = topLeftGraphics.getX();
+                        maxX = bottomRightGraphics.getX();
+                        minY = bottomRightGraphics.getY();
+                        maxY = topLeftGraphics.getY();
+
+                        isZoomed = true;
+                    }
+
+                    // Сбрасываем координаты рамки выделения
+                    drawRectStart = null;
+                    drawRectEnd = null;
+                    repaint();
+                }
+            }
+
+            @Override
+            public void mouseMoved(MouseEvent e) {
+                if (graphicsData == null || graphicsData.length == 0) return;
+                mousePosition = e.getPoint();
+                Double[] previouslyHovered = hoveredPoint;
+                hoveredPoint = null;
+                for (Double[] point : graphicsData) {
+                    // Переводим реальные математические координаты (X,Y) в экранные пиксели (x,y)
+                    Point2D.Double screenPoint = xyToPoint(point[0].doubleValue(), point[1].doubleValue());
+                    double distance = Math.sqrt(Math.pow(e.getX() - screenPoint.getX(), 2) + Math.pow(e.getY() - screenPoint.getY(), 2));
+                    if (distance <= (pointRadius / 2.0) + 4) {
+                        hoveredPoint = point;
+                        break;
+                    }
+                }
+                if (hoveredPoint != null || previouslyHovered != null) {
+                    repaint();
+                }
+            }
+            @Override
+            public void mouseExited(MouseEvent e) {
+                if (hoveredPoint != null) {
+                    hoveredPoint = null;
+                    repaint();
+                }
+            }
+        };
+        addMouseListener(mouseHandler);
+        addMouseMotionListener(mouseHandler);
+        }
+
     // Метод вызывается из обработчика элемента меню "Открыть файл с графиком"
 // главного окна приложения в случае успешной загрузки данных
     public void showGraphics(Double[][] graphicsData) {
 // Сохранить массив точек во внутреннем поле класса
         this.graphicsData = graphicsData;
+        this.isZoomed = false;     // Сбрасываем флаг зума
+        this.isDataLoaded = false; // Разрешаем заново пересчитать эталонные границы
 // Запросить перерисовку компонента (неявно вызвать paintComponent())
         repaint();
     }
@@ -72,6 +188,11 @@ public class GraphicsDisplay extends JPanel {
 // Вычисляем смещение Y от точки верхней точки (maxY)
         double deltaY = maxY - y;
         return new Point2D.Double(deltaX*scale, deltaY*scale);
+    }
+    protected Point2D.Double pointToXY(int x, int y) {
+        double graphicsX = minX + (x / scale);
+        double graphicsY = maxY - (y / scale);
+        return new Point2D.Double(graphicsX, graphicsY);
     }
 
     protected Point2D.Double shiftPoint(Point2D.Double src, double deltaX, double deltaY) {
@@ -226,13 +347,18 @@ public class GraphicsDisplay extends JPanel {
     protected void paintMarkers(Graphics2D canvas) {
         canvas.setStroke(markerStroke);
         for (Double[] point : graphicsData) {
-            double yValue = point[1];
-            if (isEvenIntegerPart(yValue)){
-                canvas.setColor(Color.BLUE);
-                canvas.setPaint(Color.BLUE);
+            if(point==hoveredPoint){
+                canvas.setColor(Color.CYAN);
+                canvas.setPaint(Color.CYAN);
             }else {
-                canvas.setColor(Color.RED);
-                canvas.setPaint(Color.RED);
+                double yValue = point[1];
+                if (isEvenIntegerPart(yValue)) {
+                    canvas.setColor(Color.BLUE);
+                    canvas.setPaint(Color.BLUE);
+                } else {
+                    canvas.setColor(Color.RED);
+                    canvas.setPaint(Color.RED);
+                }
             }
             Point2D.Double center = xyToPoint(point[0], point[1]);
             Ellipse2D.Double circle=new Ellipse2D.Double(center.x-5.5, center.y-5.5, 11,11);
@@ -257,19 +383,23 @@ public class GraphicsDisplay extends JPanel {
 // Шаг 2 - Если данные графика не загружены (при показе компонента при
 // запуске программы) - ничего не делать
         if (graphicsData==null || graphicsData.length==0) return;
-// Шаг 3 - Определить начальные границы области отображения
-// Еѐ верхний левый угол - (minX, maxY), правый нижний - (maxX, minY)
-        minX = graphicsData[0][0];
-        maxX = graphicsData[graphicsData.length-1][0];
-        minY = graphicsData[0][1];
-        maxY = minY;
-// Найти минимальное и максимальное значение функции
-        for (int i = 1; i<graphicsData.length; i++) {
-            if (graphicsData[i][1]<minY) {
-                minY = graphicsData[i][1];
+        if (!isZoomed) {
+            minX = graphicsData[0][0];
+            maxX = graphicsData[graphicsData.length-1][0];
+            minY = graphicsData[0][1];
+            maxY = minY;
+            for (int i = 1; i<graphicsData.length; i++) {
+                if (graphicsData[i][1]<minY) minY = graphicsData[i][1];
+                if (graphicsData[i][1]>maxY) maxY = graphicsData[i][1];
             }
-            if (graphicsData[i][1]>maxY) {
-                maxY = graphicsData[i][1];
+
+            // Запоминаем исходные границы для сброса правой кнопкой мыши
+            if (!isDataLoaded) {
+                originalMinX = minX;
+                originalMaxX = maxX;
+                originalMinY = minY;
+                originalMaxY = maxY;
+                isDataLoaded = true;
             }
         }
 /* Шаг 4 - Определить (исходя из размеров окна) масштабы по осям X и Y –
@@ -313,6 +443,40 @@ getSize().getHeight()/scale;
         paintGraphics(canvas);
 // Затем (если нужно) отображаются маркеры точек графика.
         if (showMarkers) paintMarkers(canvas);
+        if (hoveredPoint != null && mousePosition != null) {
+            String labelText=String.format("X: %.2f, Y: %.2f", hoveredPoint[0], hoveredPoint[1]);
+            canvas.setFont(new Font("Arial", Font.PLAIN, 14));
+            canvas.setColor(Color.BLACK);
+            FontMetrics fm = canvas.getFontMetrics();
+            int rectWidth = fm.stringWidth(labelText) + 12; // Ширина прямоугольника с отступами
+            int rectHeight = fm.getHeight() + 6;
+            int tx = mousePosition.x + 12;
+            int ty = mousePosition.y - rectHeight - 5;
+            if (tx + rectWidth > getSize().getWidth()) {
+                tx = mousePosition.x - rectWidth - 12;
+            }
+            if (ty < 0) {
+                ty = mousePosition.y + 15;
+            }
+            canvas.setPaint(new Color(255, 255, 225));
+            canvas.fillRect(tx, ty, rectWidth, rectHeight);
+
+            // Рисуем тонкую черную рамку окошка
+            canvas.setStroke(new BasicStroke(1.0f));
+            canvas.setColor(Color.BLACK);
+            canvas.drawRect(tx, ty, rectWidth, rectHeight);
+            canvas.drawString(labelText, tx + 6, ty + fm.getAscent() + 3);
+        }
+        if (drawRectStart != null && drawRectEnd != null) {
+            canvas.setStroke(selectionStroke);
+            canvas.setColor(Color.BLACK);// Вычисляем геометрию прямоугольника (чтобы корректно рисовать в любую сторону)
+            int x = Math.min(drawRectStart.x, drawRectEnd.x);
+            int y = Math.min(drawRectStart.y, drawRectEnd.y);
+            int width = Math.abs(drawRectStart.x - drawRectEnd.x);
+            int height = Math.abs(drawRectStart.y - drawRectEnd.y);
+
+            canvas.drawRect(x, y, width, height);
+        }
 // Шаг 9 - Восстановить старые настройки холста
         canvas.setFont(oldFont);
         canvas.setPaint(oldPaint);
